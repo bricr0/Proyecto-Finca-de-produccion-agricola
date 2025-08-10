@@ -294,3 +294,224 @@ DELIMITER ;
 SELECT * FROM Entrada_Inventario ei;
 SELECT * FROM Salida_Inventario si ;
 SELECT * FROM Inventario i;
+-- 11 ev_GenerarOrdenesCompraSemanal: Genera compras semanales.
+DELIMITER //
+
+CREATE EVENT ev_GenerarOrdenesCompraSemanal
+ON SCHEDULE EVERY 1 WEEK STARTS '2023-12-04 06:00:00'
+DO
+BEGIN
+    DECLARE v_umbral INT DEFAULT 10;
+
+    CALL sp_GenerarOrdenCompraAutomatica(v_umbral, 50); 
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_GenerarOrdenesCompraSemanal', 
+            CONCAT('Generadas órdenes para productos bajo ', v_umbral, ' unidades'), 
+            NOW());
+END //
+
+DELIMITER ;
+-- 12 ev_OptimizarIndicesSemanal: Reorganiza índices de bases de datos.
+DELIMITER //
+
+CREATE EVENT ev_OptimizarIndicesSemanal
+ON SCHEDULE EVERY 1 WEEK STARTS '2023-12-03 02:00:00'
+DO
+BEGIN
+  
+    ANALYZE TABLE Actividad_Agricola, Produccion, Venta, Compra;
+    
+    OPTIMIZE TABLE Lote, Producto, Inventario;
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_OptimizarIndicesSemanal', 'Optimización de índices completada', NOW());
+END //
+
+DELIMITER ;
+-- 13 ev_EnviarAlertasStockBajoDiario: Notifica stock bajo cada día.
+DELIMITER //
+
+CREATE EVENT ev_EnviarAlertasStockBajoDiario
+ON SCHEDULE EVERY 1 DAY STARTS '2023-12-01 08:00:00'
+DO
+BEGIN
+    DECLARE v_umbral INT DEFAULT 15; 
+
+    CALL sp_EnviarNotificacionStockBajo(v_umbral);
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_EnviarAlertasStockBajoDiario', 
+            CONCAT('Notificaciones enviadas para productos bajo ', v_umbral, ' unidades'), 
+            NOW());
+END //
+
+DELIMITER ;
+-- 14 ev_GenerarReporteCostosMensual: Consolida costos operativos.
+DELIMITER //
+
+CREATE EVENT ev_GenerarReporteCostosMensual
+ON SCHEDULE EVERY 1 MONTH STARTS '2023-12-01 00:00:00'
+DO
+BEGIN
+    DECLARE v_fecha_inicio DATE;
+    DECLARE v_fecha_fin DATE;
+    
+    SET v_fecha_inicio = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01');
+    SET v_fecha_fin = LAST_DAY(DATE_SUB(CURDATE(), INTERVAL 1 MONTH));
+
+    CALL sp_GenerarReporteCostos(v_fecha_inicio, v_fecha_fin);
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_GenerarReporteCostosMensual', 
+            CONCAT('Reporte de costos generado del ', v_fecha_inicio, ' al ', v_fecha_fin), 
+            NOW());
+END //
+
+DELIMITER ;
+-- 15 ev_ActualizarSalariosTrimestral: Ajusta salarios por inflación.
+DELIMITER //
+
+CREATE EVENT ev_ActualizarSalariosTrimestral
+ON SCHEDULE EVERY 3 MONTH STARTS '2024-01-01 00:00:00'
+DO
+BEGIN
+    DECLARE v_inflacion DECIMAL(5,2) DEFAULT 5.0; 
+
+    UPDATE Empleado
+    SET salario = salario * (1 + (v_inflacion/100))
+    WHERE activo = TRUE;
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_ActualizarSalariosTrimestral', 
+            CONCAT('Ajuste salarial aplicado: ', v_inflacion, '%'), 
+            NOW());
+END //
+
+DELIMITER ;
+-- 16 ev_RealizarCheckIntegridadMensual: Verifica integridad referencial.
+DELIMITER //
+
+CREATE EVENT ev_RealizarCheckIntegridadMensual
+ON SCHEDULE EVERY 1 MONTH STARTS '2023-12-01 03:00:00'
+DO
+BEGIN
+    IF EXISTS (
+        SELECT 1 
+        FROM Produccion p
+        LEFT JOIN Lote l ON p.id_lote_fk = l.id
+        WHERE l.id IS NULL
+    ) THEN
+        INSERT INTO LogErrores (evento, descripcion, severidad, fecha)
+        VALUES ('ev_RealizarCheckIntegridadMensual', 
+                'Error de integridad: Producciones sin lote asociado', 
+                'ALTA', NOW());
+    END IF;
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_RealizarCheckIntegridadMensual', 
+            'Verificación de integridad completada', 
+            NOW());
+END //
+
+DELIMITER ;
+-- 17 ev_ArchivarDatosAnuales: Mueve datos antiguos a tablas históricas.
+DELIMITER //
+
+CREATE EVENT ev_ArchivarDatosAnuales
+ON SCHEDULE EVERY 1 YEAR STARTS '2024-01-01 04:00:00'
+DO
+BEGIN
+
+    INSERT INTO Produccion_Historico
+    SELECT * FROM Produccion
+    WHERE fecha_produccion < DATE_SUB(CURDATE(), INTERVAL 2 YEAR);
+    
+  
+    DELETE FROM Produccion
+    WHERE fecha_produccion < DATE_SUB(CURDATE(), INTERVAL 2 YEAR);
+    
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_ArchivarDatosAnuales', 
+            'Archivado anual de datos históricos completado', 
+            NOW());
+END //
+
+DELIMITER ;
+-- 18 ev_ActualizarRegionClimaticaAnual: Recalcula zonas climáticas por lote.
+DELIMITER //
+
+CREATE EVENT ev_ActualizarRegionClimaticaAnual
+ON SCHEDULE EVERY 1 YEAR STARTS '2024-01-15 00:00:00'
+DO
+BEGIN
+
+    UPDATE Lote l
+    JOIN (
+        SELECT id_lote, AVG(temperatura) AS temp_promedio, AVG(precipitacion) AS prec_promedio
+        FROM Sensores
+        WHERE fecha >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+        GROUP BY id_lote
+    ) s ON l.id = s.id_lote
+    SET l.zona_climatica = CASE
+        WHEN temp_promedio > 25 AND prec_promedio > 100 THEN 'Tropical'
+        WHEN temp_promedio > 20 AND prec_promedio > 50 THEN 'Subtropical'
+        ELSE 'Templado'
+    END;
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_ActualizarRegionClimaticaAnual', 
+            'Actualización anual de zonas climáticas completada', 
+            NOW());
+END //
+
+DELIMITER ;
+-- 19 ev_SincronizacionMovilDiario: Envía datos a la app móvil.
+DELIMITER //
+
+CREATE EVENT ev_SincronizacionMovilDiario
+ON SCHEDULE EVERY 1 DAY STARTS '2023-12-01 23:30:00'
+DO
+BEGIN
+
+    SELECT * INTO OUTFILE '/tmp/datos_sincronizacion.csv'
+    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+    LINES TERMINATED BY '\n'
+    FROM (
+        SELECT id, nombre, tipo_uso, tamaño 
+        FROM Lote 
+        WHERE fecha_modificacion >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+        UNION ALL
+        SELECT id_producto, nombre, tipo_producto, NULL
+        FROM Producto
+        WHERE fecha_modificacion >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+    ) AS datos_actualizados;
+
+    INSERT INTO LogEventos (evento, descripcion, fecha)
+    VALUES ('ev_SincronizacionMovilDiario', 
+            'Archivo de sincronización generado', 
+            NOW());
+END //
+
+DELIMITER ;
+-- 20 ev_ArchivadoLogOperacional: Archive logs de operación cada noche.
+DELIMITER //
+
+CREATE EVENT ev_ArchivadoLogOperacional
+ON SCHEDULE EVERY 1 DAY STARTS '2023-12-01 23:45:00'
+DO
+BEGIN
+    INSERT INTO LogOperacional_Historico
+    SELECT * FROM LogOperacional
+    WHERE fecha < CURDATE();
+
+    DELETE FROM LogOperacional
+    WHERE fecha < CURDATE();
+
+    INSERT INTO LogOperacional_Historico (evento, descripcion, fecha)
+    VALUES ('ev_ArchivadoLogOperacional', 
+            'Archivado diario de logs operacionales completado', 
+            NOW());
+END //
+
+DELIMITER ;
