@@ -249,3 +249,294 @@ DELIMITER ;
 
 SELECT * FROM Producto;
 SELECT CantidadStockProducto('maiZ amarillo') as cantidad_stock;
+-- 11 fn_NivelReordenProducto(producto_id): Calcula el punto de reorden óptimo.
+DELIMITER //
+
+CREATE FUNCTION fn_NivelReordenProducto(p_producto_id INT)
+RETURNS INT
+DETERMINISTIC
+BEGIN
+	DECLARE v_consumo_promedio DECIMAL(10,2);
+	DECLARE v_lead_time INT DEFAULT 7;
+	DECLARE v_nivel_seguridad INT DEFAULT 2;
+
+	SELECT COALESCE(AVG(cantidad), 0) INTO v_consumo_promedio
+	FROM Detalle_Venta d 
+	JOIN Venta v ON d.id_venta  = v.id
+	WHERE d.id_producto  = p_producto_id
+	AND v.fecha >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY);
+	
+	RETURN CEILING(v_consumo_promedio * v_lead_time * v_nivel_seguridad);
+END //
+
+DELIMITER ;
+
+SELECT fn_NivelReordenProducto(15) AS punto_reorden;
+
+-- 12 fn_DepreciacionMaquinaria(maquina_id, fecha): Calcula depreciación.
+DELIMITER // 
+
+CREATE FUNCTION fn_DepreciacionMaquinaria(p_maquina_id INT, p_fecha DATE)
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+BEGIN 
+	DECLARE v_valor_inicial DECIMAL(12,2);
+	DECLARE v_vida_util INT DEFAULT 5;
+	DECLARE v_fecha_compra DATE;
+	DECLARE v_meses_transcurridos INT;
+	DECLARE v_depreciacion_acumulada DECIMAL(12,2);
+
+	SELECT m.id , fecha_compra
+	INTO v_valor_inicial, v_fecha_compra
+	FROM Maquinaria m 
+	WHERE id = p_maquina_id;
+	
+	SET v_meses_transcurridos = TIMESTAMPDIFF(MONTH, v_fecha_compra, p_fecha);
+	
+	SET v_depreciacion_acumulada = (v_valor_inicial / (v_vida_util * 12)) * LEAST(v_meses_transcurridos, v_vida_util * 12);
+	
+	RETURN ROUND(v_depreciacion_acumulada, 2);
+END //
+
+DELIMITER ;
+
+SELECT fn_DepreciacionMaquinaria(5, '2023-12-31') AS depreciacion_acumulada;
+-- 13 fn_RequerimientoAguaPorCultivo(cultivo_id, area): Devuelve litros necesarios.
+DELIMITER //
+
+CREATE FUNCTION fn_RequerimientoAguaPorCultivo(p_lote_id INT, p_area DECIMAL(10,2))
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN 
+    DECLARE v_coeficiente_agua DECIMAL(10,2);
+    
+    SELECT 
+        CASE
+            WHEN tipo_uso LIKE '%Hortalizas%' THEN 5.0
+            WHEN tipo_uso LIKE '%Frutales%' THEN 7.5
+            WHEN tipo_uso LIKE '%Cereales%' THEN 3.5 
+            ELSE 4.0
+        END INTO v_coeficiente_agua
+    FROM Lote 
+    WHERE id = p_lote_id; 
+    
+    RETURN ROUND(v_coeficiente_agua * p_area, 2);
+END //
+
+DELIMITER ;
+SELECT fn_RequerimientoAguaPorCultivo(10, 25) AS litros_agua_necesarios;
+-- 14 fn_ProyeccionVentasMensual(producto_id, meses): Devuelve ventas previstas.
+DELIMITER //
+
+CREATE FUNCTION fn_ProyeccionVentasMensual(p_producto_id INT, p_meses INT) 
+RETURNS DECIMAL(12,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_venta_promedio DECIMAL(12,2);
+    DECLARE v_factor_crecimiento DECIMAL(5,2) DEFAULT 1.05; 
+    DECLARE v_proyeccion DECIMAL(12,2) DEFAULT 0;
+    DECLARE i INT DEFAULT 1;
+
+    SELECT COALESCE(AVG(dv.cantidad * dv.precio_unitario), 0) INTO v_venta_promedio
+    FROM Detalle_Venta dv
+    JOIN Venta v ON dv.id_venta = v.id
+    WHERE dv.id_producto = p_producto_id
+    AND v.fecha >= DATE_SUB(CURRENT_DATE(), INTERVAL 6 MONTH);
+
+    WHILE i <= p_meses DO
+        SET v_proyeccion = v_proyeccion + (v_venta_promedio * POW(v_factor_crecimiento, i));
+        SET i = i + 1;
+    END WHILE;
+    
+    RETURN ROUND(v_proyeccion, 2);
+END //
+
+DELIMITER ;
+SELECT fn_ProyeccionVentasMensual(15, 3) AS ventas_proyectadas;
+-- 15 fn_DisponibilidadMaquinaria(maquina_id)
+DELIMITER //
+
+CREATE FUNCTION fn_DisponibilidadMaquinaria(p_maquina_id INT) 
+RETURNS DECIMAL(5,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_total_dias INT DEFAULT 30;
+    DECLARE v_dias_operativos INT;
+    DECLARE v_disponibilidad DECIMAL(5,2);
+
+    SELECT COUNT(DISTINCT DATE(fecha_uso)) INTO v_dias_operativos
+    FROM Uso_Maquinaria
+    WHERE id_maquinaria_fk = p_maquina_id
+    AND fecha_uso >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY);
+
+    SET v_disponibilidad = (v_dias_operativos / v_total_dias) * 100;
+    
+    RETURN ROUND(v_disponibilidad, 2);
+END //
+
+DELIMITER ;
+SELECT fn_DisponibilidadMaquinaria(8) AS disponibilidad_maquinaria;
+-- 16 fn_EficienciaProduccion(lote_id)
+DELIMITER //
+
+CREATE FUNCTION fn_EficienciaProduccion(p_lote_id INT) 
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_produccion DECIMAL(10,2);
+    DECLARE v_actividades INT;
+    DECLARE v_eficiencia DECIMAL(10,2);
+
+    SELECT COALESCE(SUM(cantidad), 0) INTO v_produccion
+    FROM Produccion
+    WHERE id_lote_fk = p_lote_id;
+
+    SELECT COUNT(*) INTO v_actividades
+    FROM Actividad_Agricola
+    WHERE id_lote = p_lote_id;
+
+    IF v_actividades > 0 THEN
+        SET v_eficiencia = v_produccion / v_actividades;
+    ELSE
+        SET v_eficiencia = 0;
+    END IF;
+    
+    RETURN ROUND(v_eficiencia, 2);
+END //
+
+DELIMITER ;
+SELECT fn_EficienciaProduccion(1) AS eficicencia_produccion;
+-- 17 fn_ProductividadPorLote(lote_id, perido)
+DELIMITER //
+
+CREATE FUNCTION fn_ProductividadPorLote(p_lote_id INT, p_periodo VARCHAR(10)) 
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_produccion_total DECIMAL(12,2);
+    DECLARE v_ventas_total DECIMAL(12,2);
+    DECLARE v_productividad DECIMAL(10,2);
+    DECLARE v_fecha_inicio DATE;
+
+    SET v_fecha_inicio = CASE p_periodo
+        WHEN 'mensual' THEN DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH)
+        WHEN 'trimestral' THEN DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+        ELSE DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR)
+    END;
+
+    SELECT COALESCE(SUM(cantidad), 0) INTO v_produccion_total
+    FROM Produccion
+    WHERE id_lote_fk = p_lote_id
+    AND fecha_produccion >= v_fecha_inicio;
+
+    SELECT COALESCE(SUM(dv.cantidad), 0) INTO v_ventas_total
+    FROM Detalle_Venta dv
+    JOIN Venta v ON dv.id_venta = v.id
+    JOIN Produccion p ON dv.id_producto = p.id_producto_fk
+    WHERE p.id_lote_fk = p_lote_id
+    AND v.fecha >= v_fecha_inicio;
+
+    IF v_produccion_total > 0 THEN
+        SET v_productividad = (v_ventas_total / v_produccion_total) * 100;
+    ELSE
+        SET v_productividad = 0;
+    END IF;
+    
+    RETURN ROUND(v_productividad, 2);
+END //
+
+DELIMITER ;
+SELECT fn_ProductividadPorLote(1, 'mensual') AS productividad_mensual;
+-- 18 fn_RiesgoClimaticoPorMes(mes): Devuelve factor de riesgo (tabla auxiliar).
+DELIMITER //
+
+CREATE FUNCTION fn_RiesgoClimaticoPorMes(p_mes INT) 
+RETURNS DECIMAL(3,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_riesgo DECIMAL(3,2);
+
+    SET v_riesgo = CASE p_mes
+        WHEN 1 THEN 0.75 
+        WHEN 2 THEN 0.80 
+        WHEN 3 THEN 0.65 
+        WHEN 4 THEN 0.45 
+        WHEN 5 THEN 0.30 
+        WHEN 6 THEN 0.25 
+        WHEN 7 THEN 0.20 
+        WHEN 8 THEN 0.25 
+        WHEN 9 THEN 0.40 
+        WHEN 10 THEN 0.60 
+        WHEN 11 THEN 0.70 
+        WHEN 12 THEN 0.78 
+        ELSE 0.50 
+    END;
+    
+    RETURN v_riesgo;
+END //
+
+DELIMITER ;
+SELECT fn_RiesgoClimaticoPorMes(5) AS riesgo_mayo;
+-- 19 fn_UsoMaquinariaLote(lote_id)
+DELIMITER //
+
+CREATE FUNCTION fn_UsoMaquinariaLote(p_lote_id INT) 
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_horas_uso DECIMAL(10,2);
+    DECLARE v_tamano_lote DECIMAL(10,2);
+    DECLARE v_uso_por_hectarea DECIMAL(10,2);
+
+    SELECT COALESCE(SUM(horas_uso), 0) INTO v_horas_uso
+    FROM Uso_Maquinaria
+    WHERE id_lote_fk = p_lote_id;
+
+    SELECT tamaño INTO v_tamano_lote
+    FROM Lote
+    WHERE id = p_lote_id;
+
+    IF v_tamano_lote > 0 THEN
+        SET v_uso_por_hectarea = v_horas_uso / v_tamano_lote;
+    ELSE
+        SET v_uso_por_hectarea = 0;
+    END IF;
+    
+    RETURN ROUND(v_uso_por_hectarea, 2);
+END //
+
+DELIMITER ;
+SELECT fn_UsoMaquinariaLote(1) AS uso_maquinaria;
+-- 20 fn_RotacionInventario(producto_id)
+DELIMITER //
+
+CREATE FUNCTION fn_RotacionInventario(p_producto_id INT) 
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+    DECLARE v_ventas_promedio DECIMAL(10,2);
+    DECLARE v_inventario_promedio DECIMAL(10,2);
+    DECLARE v_rotacion DECIMAL(10,2);
+
+    SELECT COALESCE(SUM(dv.cantidad)/3, 0) INTO v_ventas_promedio
+    FROM Detalle_Venta dv
+    JOIN Venta v ON dv.id_venta = v.id
+    WHERE dv.id_producto = p_producto_id
+    AND v.fecha >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH);
+
+    SELECT COALESCE(AVG(cantidad), 0) INTO v_inventario_promedio
+    FROM Inventario
+    WHERE id_producto_fk = p_producto_id;
+
+    IF v_inventario_promedio > 0 THEN
+        SET v_rotacion = v_ventas_promedio / v_inventario_promedio;
+    ELSE
+        SET v_rotacion = 0;
+    END IF;
+    
+    RETURN ROUND(v_rotacion, 2);
+END //
+
+DELIMITER ;
+
+SELECT fn_RotacionInventario(12) AS rotacion_inventario;
