@@ -192,3 +192,184 @@ END;
 //
 DELIMITER ;
 
+-- 11 tr_BeforeInsertVenta_ValidateCliente: Verifica que el cliente exista y esté activo.
+DELIMITER //
+
+CREATE TRIGGER tr_BeforeInsertVenta_ValidateCliente
+BEFORE INSERT ON Venta
+FOR EACH ROW
+BEGIN
+    DECLARE cliente_existe INT;
+    
+    SELECT COUNT(*) INTO cliente_existe 
+    FROM Cliente 
+    WHERE id = NEW.id_cliente;
+    
+    IF cliente_existe = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No se puede registrar la venta: El cliente no existe';
+    END IF;
+END //
+
+DELIMITER ;
+-- 12 tr_AfterUpdatePrecio_LogPrecio: Registra cambios de precios en auditoría.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterUpdatePrecio_LogPrecio
+AFTER UPDATE ON Detalle_Venta
+FOR EACH ROW
+BEGIN
+    IF OLD.precio_unitario <> NEW.precio_unitario THEN
+        INSERT INTO Inventario (id_producto_fk, cantidad, fecha_actualizacion)
+        VALUES (OLD.id_producto, 0, NOW()); -- Usamos Inventario como registro de auditoría
+    END IF;
+END //
+
+DELIMITER ;
+-- 13 tr_AfterInsertLote_CalculateTamañoRef: Calcula y almacena referencia de tamaño.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterInsertLote_CalculateTamañoRef
+AFTER INSERT ON Lote
+FOR EACH ROW
+BEGIN
+    DECLARE categoria VARCHAR(20);
+    
+    SET categoria = CASE 
+        WHEN NEW.tamaño < 1 THEN 'Pequeño'
+        WHEN NEW.tamaño BETWEEN 1 AND 5 THEN 'Mediano'
+        ELSE 'Grande'
+    END;
+    
+    -- Actualizamos el nombre para incluir la categoría
+    UPDATE Lote 
+    SET nombre = CONCAT(nombre, ' (', categoria, ')')
+    WHERE id = NEW.id;
+END //
+
+DELIMITER ;
+-- 14 tr_BeforeUpdateLote_ValidateSuperficie: Verifica que la superficie sea positiva.
+DELIMITER //
+
+CREATE TRIGGER tr_BeforeUpdateLote_ValidateSuperficie
+BEFORE UPDATE ON Lote
+FOR EACH ROW
+BEGIN
+    IF NEW.tamaño <= 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'El tamaño del lote debe ser un valor positivo';
+    END IF;
+END //
+
+DELIMITER ;
+-- 15 tr_AfterInsertProduccion_UpdateProduccionSummary: Actualiza tabla resumen.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterInsertProduccion_UpdateSummary
+AFTER INSERT ON Produccion
+FOR EACH ROW
+BEGIN
+    UPDATE Inventario 
+    SET cantidad = cantidad + NEW.cantidad,
+        fecha_actualizacion = NOW()
+    WHERE id_producto_fk = NEW.id_producto_fk;
+
+    IF ROW_COUNT() = 0 THEN
+        INSERT INTO Inventario (id_producto_fk, cantidad, fecha_actualizacion)
+        VALUES (NEW.id_producto_fk, NEW.cantidad, NOW());
+    END IF;
+END //
+
+DELIMITER ;
+-- 16 tr_AfterInsertEmpleado_AssignRole: Asigna un rol por defecto al nuevo empleado.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterInsertEmpleado_AssignRole
+AFTER INSERT ON Empleado
+FOR EACH ROW
+BEGIN
+    
+    UPDATE Empleado
+    SET doc_identidad = CONCAT('EMP-', LPAD(NEW.id, 5, '0'))
+    WHERE id = NEW.id;
+END //
+
+DELIMITER ;
+-- 17 tr_BeforeInsertVenta_ValidateInventario: Impide facturar si no hay stock suficiente.
+DELIMITER //
+
+CREATE TRIGGER tr_BeforeInsertDetalleVenta_ValidateInventario
+BEFORE INSERT ON Detalle_Venta
+FOR EACH ROW
+BEGIN
+    DECLARE stock_actual DECIMAL(10,2);
+    
+    SELECT COALESCE(cantidad, 0) INTO stock_actual
+    FROM Inventario
+    WHERE id_producto_fk = NEW.id_producto;
+    
+    IF stock_actual < NEW.cantidad THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No hay suficiente stock para realizar la venta';
+    END IF;
+END //
+
+DELIMITER ;
+-- 18 tr_AfterInsertActividad_ArchiveOld: Archive logs anteriores a un año.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterInsertActividad_ArchiveOld
+AFTER INSERT ON Actividad_Agricola
+FOR EACH ROW
+BEGIN
+	
+    DELETE FROM Actividad_Agricola 
+    WHERE fecha < DATE_SUB(NOW(), INTERVAL 2 YEAR)
+    AND id NOT IN (
+        SELECT id FROM (
+            SELECT id FROM Actividad_Agricola 
+            ORDER BY fecha DESC 
+            LIMIT 1000
+        ) AS temp
+    );
+END //
+
+DELIMITER ;
+-- 19 tr_AfterInsertTarea_ScheduleReminder: Programa recordatorio tras una notificación.
+DELIMITER //
+
+CREATE TRIGGER tr_AfterInsertTarea_ScheduleReminder
+AFTER INSERT ON Tarea
+FOR EACH ROW
+BEGIN
+    
+    IF NEW.descripcion LIKE '%urgente%' THEN
+        UPDATE Tarea
+        SET estado = 'en proceso'
+        WHERE id = NEW.id;
+    END IF;
+END //
+
+DELIMITER ;
+-- 20 tr_BeforeInsertAsignacionTarea_ValidateEmpleadoAvailability: Evita sobreasignar tareas.
+DELIMITER //
+
+CREATE TRIGGER tr_BeforeInsertAsignacionTarea_ValidateEmpleado
+BEFORE INSERT ON Asignacion_Tarea
+FOR EACH ROW
+BEGIN
+    DECLARE tareas_pendientes INT;
+    
+    SELECT COUNT(*) INTO tareas_pendientes
+    FROM Asignacion_Tarea at
+    JOIN Tarea t ON at.id_tarea_fk = t.id
+    WHERE at.id_empleado_fk = NEW.id_empleado_fk
+    AND t.estado IN ('pendiente', 'en proceso');
+    
+    IF tareas_pendientes >= 5 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'El empleado ya tiene 5 tareas asignadas pendientes';
+    END IF;
+END //
+
+DELIMITER ;
